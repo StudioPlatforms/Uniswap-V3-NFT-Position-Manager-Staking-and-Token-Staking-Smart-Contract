@@ -76,45 +76,49 @@ contract StakingContract is Ownable, ReentrancyGuard {
         emit StakingTokenUpdated(_poolId, _newStakingToken);
     }
 
-    function stake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
-        require(_poolId < poolCount, "Pool does not exist");
-        require(_amount > 0, "Amount must be greater than zero");
+   function stake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
+    require(_poolId < poolCount, "Pool does not exist");
+    require(_amount > 0, "Amount must be greater than zero");
 
-        Pool storage pool = pools[_poolId];
-        uint256 fee = (_amount * depositFeeBps) / 10000;
-        uint256 amountAfterFee = _amount - fee;
+    Pool storage pool = pools[_poolId];
+    uint256 fee = (_amount * depositFeeBps) / 10000;
+    uint256 amountAfterFee = _amount - fee;
 
-        require(pool.stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
-        require(pool.stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
+    require(pool.stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
+    require(pool.stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
 
-        pool.stakedAmounts[msg.sender] += amountAfterFee;
-        pool.totalStaked += amountAfterFee;
-        pool.lastStakedTime[msg.sender] = block.timestamp;
+    pool.stakedAmounts[msg.sender] += amountAfterFee;
+    pool.totalStaked += amountAfterFee;
+    pool.lastStakedTime[msg.sender] = block.timestamp;
 
-        emit Staked(msg.sender, _poolId, amountAfterFee);
-    }
+    adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
 
-    function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
-        require(_poolId < poolCount, "Pool does not exist");
-        require(_amount > 0, "Amount must be greater than zero");
+    emit Staked(msg.sender, _poolId, amountAfterFee);
+}
 
-        Pool storage pool = pools[_poolId];
-        uint256 stakedAmount = pool.stakedAmounts[msg.sender];
+function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
+    require(_poolId < poolCount, "Pool does not exist");
+    require(_amount > 0, "Amount must be greater than zero");
 
-        require(stakedAmount >= _amount, "Insufficient staked balance");
-        require(block.timestamp >= pool.lastStakedTime[msg.sender] + COOLDOWN_PERIOD, "Cooldown period not over");
+    Pool storage pool = pools[_poolId];
+    uint256 stakedAmount = pool.stakedAmounts[msg.sender];
 
-        uint256 fee = (_amount * withdrawalFeeBps) / 10000;
-        uint256 amountAfterFee = _amount - fee;
+    require(stakedAmount >= _amount, "Insufficient staked balance");
+    require(block.timestamp >= pool.lastStakedTime[msg.sender] + COOLDOWN_PERIOD, "Cooldown period not over");
 
-        pool.stakedAmounts[msg.sender] -= _amount;
-        pool.totalStaked -= _amount;
+    uint256 fee = (_amount * withdrawalFeeBps) / 10000;
+    uint256 amountAfterFee = _amount - fee;
 
-        require(pool.stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
-        require(pool.stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
+    pool.stakedAmounts[msg.sender] -= _amount;
+    pool.totalStaked -= _amount;
 
-        emit Unstaked(msg.sender, _poolId, amountAfterFee);
-    }
+    require(pool.stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
+    require(pool.stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
+
+    adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
+
+    emit Unstaked(msg.sender, _poolId, amountAfterFee);
+}
 
     function calculateReward(uint256 _poolId, address _user) public view returns (uint256) {
         Pool storage pool = pools[_poolId];
@@ -141,21 +145,20 @@ contract StakingContract is Ownable, ReentrancyGuard {
         emit RewardClaimed(msg.sender, _poolId, reward);
     }
 
-    function adjustAPY(uint256 _poolId) external onlyOwner {
-        require(_poolId < poolCount, "Pool does not exist");
-
-        Pool storage pool = pools[_poolId];
-        
-        if (pool.totalStaked >= 100000 ether) {
-            pool.apy = 30;
-        } else if (pool.totalStaked >= 50000 ether) {
-            pool.apy = 100;
-        } else {
-            pool.apy = 200;
-        }
-
-        emit APYAdjusted(_poolId, pool.apy);
+function adjustAPY(uint256 _poolId) internal {
+    Pool storage pool = pools[_poolId];
+    
+    // Adjust APY based on total staked amount thresholds
+    if (pool.totalStaked >= 100000 ether) {
+        pool.apy = 20; // 20% APY for high total staked amount
+    } else if (pool.totalStaked >= 50000 ether) {
+        pool.apy = 30; // 30% APY for medium total staked amount
+    } else {
+        pool.apy = 200; // 200% APY for low total staked amount to attract users initially
     }
+    
+    emit APYAdjusted(_poolId, pool.apy);
+}
 
     function getPoolInfo(uint256 _poolId) external view returns (uint256, address, address, uint256) {
         require(_poolId < poolCount, "Pool does not exist");
@@ -176,4 +179,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
     function getPoolCount() external view returns (uint256) {
         return poolCount;
     }
+
+    function getCurrentAPY(uint256 _poolId) external view returns (uint256) {
+    require(_poolId < poolCount, "Pool does not exist");
+    Pool storage pool = pools[_poolId];
+    return pool.apy;
+}
+
 }
