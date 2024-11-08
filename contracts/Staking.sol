@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-
-
-
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 contract StakingContract is Ownable, ReentrancyGuard {
-    // Token interface for staking tokens
-    IERC20 public stakingToken;
-
     // Cooldown period for unstaking
     uint256 public constant COOLDOWN_PERIOD = 4 hours;
 
@@ -19,12 +13,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
     address public feeWallet;
 
     // Fee percentages (as basis points, e.g., 200 = 2%)
-    uint256 public constant DEPOSIT_FEE_BPS = 200; // 2%
-    uint256 public constant WITHDRAWAL_FEE_BPS = 500; // 5%
+    uint256 public depositFeeBps = 200; // 2%
+    uint256 public withdrawalFeeBps = 500; // 5%
 
     struct Pool {
         uint256 apy;                   // Annual Percentage Yield for rewards
         uint256 totalStaked;           // Total amount staked in this pool
+        IERC20 stakingToken;           // Staking token for this pool
         IERC20 rewardToken;            // Reward token for this pool
         mapping(address => uint256) stakedAmounts;  // Staked amount per user
         mapping(address => uint256) lastStakedTime; // Last time the user staked
@@ -35,16 +30,13 @@ contract StakingContract is Ownable, ReentrancyGuard {
     uint256 public poolCount;               // Number of pools created
 
     // Events
-    event PoolCreated(uint256 indexed poolId, uint256 apy, address rewardToken);
+    event PoolCreated(uint256 indexed poolId, uint256 apy, address stakingToken, address rewardToken);
     event Staked(address indexed user, uint256 poolId, uint256 amount);
     event Unstaked(address indexed user, uint256 poolId, uint256 amount);
     event RewardClaimed(address indexed user, uint256 poolId, uint256 reward);
     event APYAdjusted(uint256 indexed poolId, uint256 newAPY);
-
-    constructor(address _stakingToken) Ownable(msg.sender) {
-        stakingToken = IERC20(_stakingToken);
-        poolCount = 0;
-    }
+    event FeesUpdated(uint256 newDepositFeeBps, uint256 newWithdrawalFeeBps);
+    event StakingTokenUpdated(uint256 indexed poolId, address newStakingToken);
 
     modifier feeWalletSet() {
         require(feeWallet != address(0), "Fee wallet not set");
@@ -56,18 +48,32 @@ contract StakingContract is Ownable, ReentrancyGuard {
         _;
     }
 
+    // Pass msg.sender to the Ownable constructor to set the initial owner
+    constructor() Ownable(msg.sender) {}
+
     function setFeeWallet(address _feeWallet) external onlyOwner validAddress(_feeWallet) {
         feeWallet = _feeWallet;
     }
 
-    function addPool(uint256 _apy, address _rewardToken) external onlyOwner validAddress(_rewardToken) {
+    function updateFees(uint256 _depositFeeBps, uint256 _withdrawalFeeBps) external onlyOwner {
+        depositFeeBps = _depositFeeBps;
+        withdrawalFeeBps = _withdrawalFeeBps;
+        emit FeesUpdated(_depositFeeBps, _withdrawalFeeBps);
+    }
+
+    function addPool(uint256 _apy, address _stakingToken, address _rewardToken) external onlyOwner validAddress(_stakingToken) validAddress(_rewardToken) {
         Pool storage newPool = pools[poolCount];
         newPool.apy = _apy;
+        newPool.stakingToken = IERC20(_stakingToken);
         newPool.rewardToken = IERC20(_rewardToken);
-        newPool.totalStaked = 0;
-
-        emit PoolCreated(poolCount, _apy, _rewardToken);
         poolCount++;
+        emit PoolCreated(poolCount - 1, _apy, _stakingToken, _rewardToken);
+    }
+
+    function updateStakingToken(uint256 _poolId, address _newStakingToken) external onlyOwner validAddress(_newStakingToken) {
+        require(_poolId < poolCount, "Pool does not exist");
+        pools[_poolId].stakingToken = IERC20(_newStakingToken);
+        emit StakingTokenUpdated(_poolId, _newStakingToken);
     }
 
     function stake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
@@ -75,11 +81,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
         require(_amount > 0, "Amount must be greater than zero");
 
         Pool storage pool = pools[_poolId];
-        uint256 fee = (_amount * DEPOSIT_FEE_BPS) / 10000;
+        uint256 fee = (_amount * depositFeeBps) / 10000;
         uint256 amountAfterFee = _amount - fee;
 
-        require(stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
-        require(stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
+        require(pool.stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
+        require(pool.stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
 
         pool.stakedAmounts[msg.sender] += amountAfterFee;
         pool.totalStaked += amountAfterFee;
@@ -98,14 +104,14 @@ contract StakingContract is Ownable, ReentrancyGuard {
         require(stakedAmount >= _amount, "Insufficient staked balance");
         require(block.timestamp >= pool.lastStakedTime[msg.sender] + COOLDOWN_PERIOD, "Cooldown period not over");
 
-        uint256 fee = (_amount * WITHDRAWAL_FEE_BPS) / 10000;
+        uint256 fee = (_amount * withdrawalFeeBps) / 10000;
         uint256 amountAfterFee = _amount - fee;
 
         pool.stakedAmounts[msg.sender] -= _amount;
         pool.totalStaked -= _amount;
 
-        require(stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
-        require(stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
+        require(pool.stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
+        require(pool.stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
 
         emit Unstaked(msg.sender, _poolId, amountAfterFee);
     }
@@ -151,10 +157,10 @@ contract StakingContract is Ownable, ReentrancyGuard {
         emit APYAdjusted(_poolId, pool.apy);
     }
 
-    function getPoolInfo(uint256 _poolId) external view returns (uint256, address, uint256) {
+    function getPoolInfo(uint256 _poolId) external view returns (uint256, address, address, uint256) {
         require(_poolId < poolCount, "Pool does not exist");
         Pool storage pool = pools[_poolId];
-        return (pool.apy, address(pool.rewardToken), pool.totalStaked);
+        return (pool.apy, address(pool.stakingToken), address(pool.rewardToken), pool.totalStaked);
     }
 
     function getUserStakedAmount(uint256 _poolId, address _user) external view returns (uint256) {
