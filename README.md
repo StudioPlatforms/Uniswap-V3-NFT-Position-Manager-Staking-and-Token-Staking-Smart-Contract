@@ -25,4 +25,4 @@ This repository contains the **Staking Smart Contract** developed by **3D Studio
 For questions or support, contact **3D Studio Europe**:
 
 - **Email**: [office@3dcity.life](mailto:office@3dcity.life)
-- **Telegram**: [@official3dcitydev](https://t.me/official3dcitydev)
+- **Telegram**: @official3dcitydev
