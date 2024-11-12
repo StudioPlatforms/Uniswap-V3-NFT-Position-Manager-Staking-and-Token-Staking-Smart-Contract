@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 contract StakingContract is Ownable, ReentrancyGuard {
     // Cooldown period for unstaking
     uint256 public constant COOLDOWN_PERIOD = 4 hours;
+    uint256 public constant UNSTAKE_COOLDOWN = 4 hours;
 
     // Fee wallet address to collect fees
     address public feeWallet;
@@ -21,6 +22,7 @@ contract StakingContract is Ownable, ReentrancyGuard {
         uint256 totalStaked;           // Total amount staked in this pool
         IERC20 stakingToken;           // Staking token for this pool
         IERC20 rewardToken;            // Reward token for this pool
+        bool active;                   // Status of the pool (active/inactive)
         mapping(address => uint256) stakedAmounts;  // Staked amount per user
         mapping(address => uint256) lastStakedTime; // Last time the user staked
     }
@@ -36,7 +38,8 @@ contract StakingContract is Ownable, ReentrancyGuard {
     event RewardClaimed(address indexed user, uint256 poolId, uint256 reward);
     event APYAdjusted(uint256 indexed poolId, uint256 newAPY);
     event FeesUpdated(uint256 newDepositFeeBps, uint256 newWithdrawalFeeBps);
-    event StakingTokenUpdated(uint256 indexed poolId, address newStakingToken);
+    event PoolDeactivated(uint256 indexed poolId);
+    event PoolActivated(uint256 indexed poolId);
 
     modifier feeWalletSet() {
         require(feeWallet != address(0), "Fee wallet not set");
@@ -45,6 +48,11 @@ contract StakingContract is Ownable, ReentrancyGuard {
 
     modifier validAddress(address _address) {
         require(_address != address(0), "Invalid address");
+        _;
+    }
+
+    modifier poolIsActive(uint256 _poolId) {
+        require(pools[_poolId].active, "Pool is not active");
         _;
     }
 
@@ -66,59 +74,79 @@ contract StakingContract is Ownable, ReentrancyGuard {
         newPool.apy = _apy;
         newPool.stakingToken = IERC20(_stakingToken);
         newPool.rewardToken = IERC20(_rewardToken);
+        newPool.active = true;
         poolCount++;
         emit PoolCreated(poolCount - 1, _apy, _stakingToken, _rewardToken);
     }
 
-    function updateStakingToken(uint256 _poolId, address _newStakingToken) external onlyOwner validAddress(_newStakingToken) {
+    function deactivatePool(uint256 _poolId) external onlyOwner {
         require(_poolId < poolCount, "Pool does not exist");
-        pools[_poolId].stakingToken = IERC20(_newStakingToken);
-        emit StakingTokenUpdated(_poolId, _newStakingToken);
+        pools[_poolId].active = false;
+        emit PoolDeactivated(_poolId);
     }
 
-   function stake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
-    require(_poolId < poolCount, "Pool does not exist");
-    require(_amount > 0, "Amount must be greater than zero");
+    function activatePool(uint256 _poolId) external onlyOwner {
+        require(_poolId < poolCount, "Pool does not exist");
+        pools[_poolId].active = true;
+        emit PoolActivated(_poolId);
+    }
 
-    Pool storage pool = pools[_poolId];
-    uint256 fee = (_amount * depositFeeBps) / 10000;
-    uint256 amountAfterFee = _amount - fee;
+    function stake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet poolIsActive(_poolId) {
+        require(_amount > 0, "Amount must be greater than zero");
 
-    require(pool.stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
-    require(pool.stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
+        Pool storage pool = pools[_poolId];
+        uint256 fee = (_amount * depositFeeBps) / 10000;
+        uint256 amountAfterFee = _amount - fee;
 
-    pool.stakedAmounts[msg.sender] += amountAfterFee;
-    pool.totalStaked += amountAfterFee;
-    pool.lastStakedTime[msg.sender] = block.timestamp;
+        require(pool.stakingToken.transferFrom(msg.sender, address(this), amountAfterFee), "Transfer failed");
+        require(pool.stakingToken.transferFrom(msg.sender, feeWallet, fee), "Fee transfer failed");
 
-    adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
+        pool.stakedAmounts[msg.sender] += amountAfterFee;
+        pool.totalStaked += amountAfterFee;
+        pool.lastStakedTime[msg.sender] = block.timestamp;
 
-    emit Staked(msg.sender, _poolId, amountAfterFee);
-}
+        adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
 
-function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet {
-    require(_poolId < poolCount, "Pool does not exist");
-    require(_amount > 0, "Amount must be greater than zero");
+        emit Staked(msg.sender, _poolId, amountAfterFee);
+    }
 
-    Pool storage pool = pools[_poolId];
-    uint256 stakedAmount = pool.stakedAmounts[msg.sender];
+    function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWalletSet poolIsActive(_poolId) {
+        require(_amount > 0, "Amount must be greater than zero");
 
-    require(stakedAmount >= _amount, "Insufficient staked balance");
-    require(block.timestamp >= pool.lastStakedTime[msg.sender] + COOLDOWN_PERIOD, "Cooldown period not over");
+        Pool storage pool = pools[_poolId];
+        uint256 stakedAmount = pool.stakedAmounts[msg.sender];
 
-    uint256 fee = (_amount * withdrawalFeeBps) / 10000;
-    uint256 amountAfterFee = _amount - fee;
+        require(stakedAmount >= _amount, "Insufficient staked balance");
+        require(block.timestamp >= pool.lastStakedTime[msg.sender] + UNSTAKE_COOLDOWN, "Cooldown period not over");
 
-    pool.stakedAmounts[msg.sender] -= _amount;
-    pool.totalStaked -= _amount;
+        uint256 fee = (_amount * withdrawalFeeBps) / 10000;
+        uint256 amountAfterFee = _amount - fee;
 
-    require(pool.stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
-    require(pool.stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
+        pool.stakedAmounts[msg.sender] -= _amount;
+        pool.totalStaked -= _amount;
 
-    adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
+        require(pool.stakingToken.transfer(msg.sender, amountAfterFee), "Transfer failed");
+        require(pool.stakingToken.transfer(feeWallet, fee), "Fee transfer failed");
 
-    emit Unstaked(msg.sender, _poolId, amountAfterFee);
-}
+        adjustAPY(_poolId); // Adjust APY based on the updated total staked amount
+
+        emit Unstaked(msg.sender, _poolId, amountAfterFee);
+    }
+
+    function adjustAPY(uint256 _poolId) internal {
+        Pool storage pool = pools[_poolId];
+        
+        // Dynamic APY adjustment based on TVL thresholds
+        if (pool.totalStaked >= 100000 ether) {
+            pool.apy = 20; // Reduce to 20% APY for high TVL
+        } else if (pool.totalStaked >= 50000 ether) {
+            pool.apy = 30; // Medium 30% APY for moderate TVL
+        } else {
+            pool.apy = 200; // 200% APY initially to attract users
+        }
+
+        emit APYAdjusted(_poolId, pool.apy);
+    }
 
     function calculateReward(uint256 _poolId, address _user) public view returns (uint256) {
         Pool storage pool = pools[_poolId];
@@ -132,9 +160,7 @@ function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWall
         return (stakedAmount * pool.apy * stakingDuration) / (365 days * 100);
     }
 
-    function claimRewards(uint256 _poolId) external nonReentrant {
-        require(_poolId < poolCount, "Pool does not exist");
-
+    function claimRewards(uint256 _poolId) external nonReentrant poolIsActive(_poolId) {
         Pool storage pool = pools[_poolId];
         uint256 reward = calculateReward(_poolId, msg.sender);
         require(reward > 0, "No rewards available");
@@ -145,25 +171,10 @@ function unstake(uint256 _poolId, uint256 _amount) external nonReentrant feeWall
         emit RewardClaimed(msg.sender, _poolId, reward);
     }
 
-function adjustAPY(uint256 _poolId) internal {
-    Pool storage pool = pools[_poolId];
-    
-    // Adjust APY based on total staked amount thresholds
-    if (pool.totalStaked >= 100000 ether) {
-        pool.apy = 20; // 20% APY for high total staked amount
-    } else if (pool.totalStaked >= 50000 ether) {
-        pool.apy = 30; // 30% APY for medium total staked amount
-    } else {
-        pool.apy = 200; // 200% APY for low total staked amount to attract users initially
-    }
-    
-    emit APYAdjusted(_poolId, pool.apy);
-}
-
-    function getPoolInfo(uint256 _poolId) external view returns (uint256, address, address, uint256) {
+    function getPoolInfo(uint256 _poolId) external view returns (uint256, address, address, uint256, bool) {
         require(_poolId < poolCount, "Pool does not exist");
         Pool storage pool = pools[_poolId];
-        return (pool.apy, address(pool.stakingToken), address(pool.rewardToken), pool.totalStaked);
+        return (pool.apy, address(pool.stakingToken), address(pool.rewardToken), pool.totalStaked, pool.active);
     }
 
     function getUserStakedAmount(uint256 _poolId, address _user) external view returns (uint256) {
@@ -181,9 +192,13 @@ function adjustAPY(uint256 _poolId) internal {
     }
 
     function getCurrentAPY(uint256 _poolId) external view returns (uint256) {
-    require(_poolId < poolCount, "Pool does not exist");
-    Pool storage pool = pools[_poolId];
-    return pool.apy;
-}
+        require(_poolId < poolCount, "Pool does not exist");
+        Pool storage pool = pools[_poolId];
+        return pool.apy;
+    }
 
+    function isPoolActive(uint256 _poolId) external view returns (bool) {
+        require(_poolId < poolCount, "Pool does not exist");
+        return pools[_poolId].active;
+    }
 }
