@@ -238,20 +238,44 @@ contract StakingAndFarming is Ownable, ReentrancyGuard, IERC721Receiver {
     function calculateReward(uint256 poolId, address user) public view returns (uint256) {
         Pool storage pool = pools[poolId];
         uint256 userStake = pool.userStakes[user];
-        if (userStake == 0) return 0;
+        uint256[] memory userNFTs = pool.userNFTs[user];
+        uint256 totalLiquidity = 0;
 
-        uint256 timeStaked = block.timestamp - pool.lastStakeTime[user];
+        if (userStake > 0) {
+            uint256 timeStaked = block.timestamp - pool.lastStakeTime[user];
 
-        // Example multiplier logic
-        uint256 multiplier;
-        if (timeStaked > 90 days) {
-            multiplier = 150; // 50% boost
-        } else if (timeStaked > 30 days) {
-            multiplier = 120; // 20% boost
-        } else {
-            multiplier = 100;
+            // Example multiplier logic
+            uint256 multiplier;
+            if (timeStaked > 90 days) {
+                multiplier = 150; // 50% boost
+            } else if (timeStaked > 30 days) {
+                multiplier = 120; // 20% boost
+            } else {
+                multiplier = 100;
+            }
+            return (userStake * pool.apy * timeStaked * multiplier) / (365 days * 10000);
         }
-        return (userStake * pool.apy * timeStaked * multiplier) / (365 days * 10000);
+
+        if (pool.supportsNFT && userNFTs.length > 0) {
+            for (uint256 i = 0; i < userNFTs.length; i++) {
+                uint256 liquidity;
+                (, , , , , , , liquidity, , , , ) = INonfungiblePositionManager(positionManager).positions(userNFTs[i]);
+                totalLiquidity += liquidity;
+            }
+
+            // Example multiplier logic for NFT liquidity
+            uint256 nftMultiplier;
+            if (totalLiquidity > 100000) {
+                nftMultiplier = 130; // 30% boost
+            } else if (totalLiquidity > 50000) {
+                nftMultiplier = 120; // 20% boost
+            } else {
+                nftMultiplier = 100;
+            }
+            return (totalLiquidity * pool.apy * block.timestamp / pool.lastStakeTime[user] * nftMultiplier) / (365 days * 10000);
+        }
+
+        return 0;
     }
 
     function findNFTIndex(uint256[] storage nftArray, uint256 nftId) internal view returns (uint256) {
