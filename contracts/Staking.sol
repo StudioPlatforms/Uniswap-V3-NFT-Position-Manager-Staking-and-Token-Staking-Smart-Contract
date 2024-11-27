@@ -466,28 +466,32 @@ function emergencyWithdraw(uint256 poolId) external nonReentrant {
 
 
     // Function to update certain details of a pool
-    function updatePoolDetails(
-        uint256 poolId,
-        uint256 newBaseApy,
-        uint256 newMinApy,
-        uint256 newScalingFactor,
-        bool newActiveStatus
-    ) external onlyOwner {
-        require(poolId < poolCount, "Invalid pool ID");
+function updatePoolDetails(
+    uint256 poolId,
+    uint256 newBaseApy,
+    uint256 newMinApy,
+    uint256 newScalingFactor,
+    bool newActiveStatus
+) external onlyOwner {
+    require(poolId < poolCount, "Invalid pool ID");
 
-        Pool storage pool = pools[poolId];
-        pool.baseApy = newBaseApy;
-        pool.minApy = newMinApy;
-        pool.scalingFactor = newScalingFactor;
-        pool.active = newActiveStatus;
+    Pool storage pool = pools[poolId];
+    pool.baseApy = newBaseApy;
+    pool.minApy = newMinApy;
+    pool.scalingFactor = newScalingFactor;
+    pool.active = newActiveStatus;
 
-        // Adjust APY based on new parameters
-        if (pool.supportsNFT) {
-            adjustApyNFT(poolId);
-        } else {
-            adjustApy(poolId);
-        }
+    // Explicitly reset APY to baseApy
+    pool.apy = newBaseApy;
+
+    // Adjust APY based on new parameters
+    if (pool.supportsNFT) {
+        adjustApyNFT(poolId);
+    } else {
+        adjustApy(poolId);
     }
+}
+
 
     // Function to set minimum stake requirement for a pool
     mapping(uint256 => uint256) public minimumStake;
