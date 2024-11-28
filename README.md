@@ -46,3 +46,5 @@ This Solidity smart contract combines **token** and **NFT staking** with farming
 
 ## License
 This project is licensed under the **MIT License**.
+
+Need a custom dapp or smart contract? Send us an email at office@3dcity.life or tg @official3dcitydev
