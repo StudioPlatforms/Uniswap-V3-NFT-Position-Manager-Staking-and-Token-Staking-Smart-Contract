@@ -1,28 +1,44 @@
-# Staking Contract
+StakingAndFarming Contract
 
-This smart contract allows users to stake tokens (e.g., LP tokens) and earn rewards in a configurable reward token (e.g., SHINOBI). It includes automatic APY adjustments based on the total staked value (TVL), a cooldown period for unstaking, and a fee structure for sustainability.
+This Solidity smart contract combines token and NFT staking with farming features. Built on the Uniswap V3 ecosystem, it enables flexible staking rewards, dynamic APY adjustment, and comprehensive pool management for both token-based and NFT-based liquidity providers.
 
-## Features
+Features:
+Dual Staking Options: Supports ERC20 tokens and NFTs as staking assets.
+Dynamic APY Calculation: Automatically adjusts APY based on the total staked amount or NFT liquidity.
+Reward Distribution: Claims rewards based on staking duration, asset type, and APY.
+Unstake Cooldown: Implements a 4-hour cooldown period for unstaking.
+Fee Management: Configurable deposit and withdrawal fees, directed to a fee wallet.
+Emergency Withdrawals: Allows users to withdraw staked tokens or NFTs during emergencies.
+Comprehensive Pool Management:
+Create, activate, deactivate, and update pools.
+Customize APY scaling, fee tiers, and liquidity thresholds.
+Uniswap V3 Integration:
+Tracks and validates NFT liquidity via the NonfungiblePositionManager.
+Includes support for LP pair contracts and fee tiers.
+Security Enhancements:
+Uses OpenZeppelin's SafeERC20, ReentrancyGuard, and Ownable contracts.
+Prevents reentrancy attacks and direct ETH transfers.
+Events:
+PoolCreated: Triggered when a new pool is created.
+Staked / Unstaked: Tracks staking and unstaking of tokens or NFTs.
+RewardClaimed: Logs reward claims by users.
+PoolActivated / PoolDeactivated: Indicates pool status changes.
+FeesUpdated: Reflects changes in deposit and withdrawal fees.
+RewardsDeposited: Logs reward token deposits for specific pools.
+RewardCalculated: Provides details on reward calculation logic.
+Usage Scenarios:
+Staking Pools: Configure pools for token holders with dynamic APY scaling.
+NFT Liquidity Farming: Leverage Uniswap V3 NFT liquidity for enhanced rewards.
+Yield Optimization: Boost staking rewards for long-term liquidity providers.
+DeFi Integrations: Add customizable farming mechanics to decentralized finance platforms.
+Technology Stack:
+Solidity ^0.8.28
+OpenZeppelin Contracts
+Uniswap V3 Integration
+Getting Started:
+Deploy the contract with the required fee wallet and Uniswap V3 position manager.
+Configure staking pools with specific parameters such as APY, supported asset type (token or NFT), and fee structure.
+Stake tokens or NFTs to start earning rewards.
+License:
+This project is licensed under the MIT License.
 
-- **Staking & Rewards**: Users can stake tokens in pools to earn rewards. Each pool can have its own staking and reward tokens.
-- **Cooldown Period**: Enforces a 4-hour cooldown for unstaking to prevent frequent actions.
-- **Dynamic APY**: APY adjusts based on TVL:
-  - **200% APY**: Low TVL.
-  - **30% APY**: Moderate TVL.
-  - **20% APY**: High TVL.
-- **Fees**: Includes a 2% deposit fee and 5% withdrawal fee directed to a fee wallet.
-
-## Key Functions
-
-- **Owner Controls**: Set fees, create pools, and activate/deactivate pools.
-- **Staking**: Users can stake and unstake tokens with fees applied.
-- **Rewards**: Users can claim rewards based on their staked amount and APY.
-
-## Usage
-
-1. **Deploy the Contract**: Deploy using [Remix](https://remix.ethereum.org/) or [Hardhat](https://hardhat.org/).
-2. **Set Fee Wallet**: Specify a wallet for collecting fees.
-3. **Create Pool**: Use `addPool` to add a staking pool.
-4. **Stake & Earn**: Users stake tokens to earn rewards.
-5. **Claim Rewards**: Users claim rewards with `claimRewards`.
-6. **Unstake**: Users can unstake after the cooldown period.
