@@ -1,12 +1,38 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+/**
+ * @title StakingAndFarming - Ultimate Overhaul & Expansion
+ * @dev Factory pattern with user-created pools, fixed APY, decimal-safe math, and per-share accounting
+ * Implements the complete overhaul specification with security improvements and gas optimizations
+ */
+
+// Basic interfaces
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint256);
+    function approve(address spender, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function decimals() external view returns (uint8);
+}
+
+interface IERC721 {
+    function balanceOf(address owner) external view returns (uint256 balance);
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    function transferFrom(address from, address to, uint256 tokenId) external;
+    function approve(address to, uint256 tokenId) external;
+    function setApprovalForAll(address operator, bool approved) external;
+    function getApproved(uint256 tokenId) external view returns (address operator);
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+}
+
+interface IERC721Receiver {
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data) external returns (bytes4);
+}
 
 interface INonfungiblePositionManager {
     function positions(uint256 tokenId)
@@ -28,474 +54,836 @@ interface INonfungiblePositionManager {
         );
 }
 
-contract StakingAndFarming is Ownable, ReentrancyGuard, IERC721Receiver {
+// Basic access control
+abstract contract Ownable {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor(address initialOwner) {
+        _transferOwnership(initialOwner);
+    }
+
+    modifier onlyOwner() {
+        require(owner() == msg.sender, "Ownable: caller is not the owner");
+        _;
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    function renounceOwnership() public virtual onlyOwner {
+        _transferOwnership(address(0));
+    }
+
+    function transferOwnership(address newOwner) public virtual onlyOwner {
+        require(newOwner != address(0), "Ownable: new owner is the zero address");
+        _transferOwnership(newOwner);
+    }
+
+    function _transferOwnership(address newOwner) internal virtual {
+        address oldOwner = _owner;
+        _owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
+    }
+}
+
+// Reentrancy guard
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
+    uint256 private _status;
+
+    constructor() {
+        _status = _NOT_ENTERED;
+    }
+
+    modifier nonReentrant() {
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
+        _;
+        _status = _NOT_ENTERED;
+    }
+}
+
+// Pausable functionality
+abstract contract Pausable {
+    event Paused(address account);
+    event Unpaused(address account);
+
+    bool private _paused;
+
+    constructor() {
+        _paused = false;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused(), "Pausable: paused");
+        _;
+    }
+
+    modifier whenPaused() {
+        require(paused(), "Pausable: not paused");
+        _;
+    }
+
+    function paused() public view virtual returns (bool) {
+        return _paused;
+    }
+
+    function _pause() internal virtual whenNotPaused {
+        _paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function _unpause() internal virtual whenPaused {
+        _paused = false;
+        emit Unpaused(msg.sender);
+    }
+}
+
+// Safe ERC20 operations
+library SafeERC20 {
+    function safeTransfer(IERC20 token, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+    }
+
+    function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));
+    }
+
+    function _callOptionalReturn(IERC20 token, bytes memory data) private {
+        (bool success, bytes memory returndata) = address(token).call(data);
+        require(success, "SafeERC20: low-level call failed");
+        if (returndata.length > 0) {
+            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+        }
+    }
+}
+
+// Address utilities
+library Address {
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        (bool success, bytes memory returndata) = target.call{value: value}(data);
+        return verifyCallResult(success, returndata, errorMessage);
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        return account.code.length > 0;
+    }
+
+    function verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) internal pure returns (bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            if (returndata.length > 0) {
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+}
+
+// Minimal proxy clones
+library Clones {
+    function clone(address implementation) internal returns (address instance) {
+        bytes32 salt = keccak256(abi.encodePacked(block.timestamp, block.number, msg.sender));
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000)
+            mstore(add(ptr, 0x14), shl(0x60, implementation))
+            mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)
+            instance := create2(0, ptr, 0x37, salt)
+        }
+        require(instance != address(0), "ERC1167: create2 failed");
+    }
+
+    function cloneDeterministic(address implementation, bytes32 salt) internal returns (address instance) {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, 0x3d602d80600a3d3981f3363d3d373d3d3d363d73000000000000000000000000)
+            mstore(add(ptr, 0x14), shl(0x60, implementation))
+            mstore(add(ptr, 0x28), 0x5af43d82803e903d91602b57fd5bf30000000000000000000000000000000000)
+            instance := create2(0, ptr, 0x37, salt)
+        }
+        require(instance != address(0), "ERC1167: create2 failed");
+    }
+}
+
+// Individual Pool Contract (deployed as clones)
+contract StakingPool is ReentrancyGuard, Pausable, IERC721Receiver {
     using SafeERC20 for IERC20;
 
-    uint256 public constant UNSTAKE_COOLDOWN = 4 hours;
-    uint256 private constant PRECISION_FACTOR = 1e18; // Increased precision factor
-    uint256 private constant SECONDS_IN_YEAR = 365 days;
-    uint256 private constant BASIS_POINTS = 10000;
+    // High precision constants
+    uint256 constant RAY = 1e27;                    // High precision for per-share calculations
+    uint256 constant YEAR = 365 days;               // Seconds in a year (acceptable drift)
+    uint256 constant BP = 10_000;                   // Basis points divider
+    uint256 constant UNSTAKE_COOLDOWN = 4 hours;    // Cooldown period
+    uint256 constant MAX_LIQUIDITY_PER_NFT = 1e24;  // Cap liquidity to prevent economic attacks
 
-    address public feeWallet;
-    uint256 public depositFeeBps = 200; // 2%
-    uint256 public withdrawalFeeBps = 500; // 5%
-    address public positionManager;
-
-    struct Pool {
-        uint256 baseApy;
-        uint256 minApy;
-        uint256 scalingFactor;
-        uint256 apy;
-        uint256 totalStaked;
-        IERC20 stakingToken;
-        IERC721 nftToken;
+    struct PoolData {
+        // Immutable after initialize()
+        IERC20 stakeToken;
         IERC20 rewardToken;
-        bool supportsNFT;
-        bool active;
-        uint24 feeTier;
-        address lpPairContract;
-        mapping(address => uint256) userStakes;
-        mapping(address => uint256[]) userNFTs;
-        mapping(address => uint256) lastStakeTime;
-        uint256 totalRewardsDistributed;
-        uint256[] lpPositions;
+        uint8 stakeDec;
+        uint8 rewardDec;
+        uint256 apyBP;              // e.g. 1200 = 12.00%
+        address feeWallet;
+        uint256 depositFeeBP;       // 0-1000 (0-10%)
+        uint256 withdrawFeeBP;      // 0-1000 (0-10%)
+        address poolCreator;        // Who created this pool
+        bool supportsNFT;           // Whether this pool supports NFT staking
+        IERC721 nftToken;           // NFT token for LP positions
+        address positionManager;    // Uniswap V3 position manager
+
+        // State variables
+        uint256 accRewardPerShare;  // Accumulated rewards per share (in RAY precision)
+        uint256 lastAccrualTs;      // Last time rewards were accrued
+        uint256 totalStakeR;        // Total stake converted to reward token units
+        uint256 availableRewards;   // Available reward tokens in the pool
+        bool initialized;           // Initialization flag
     }
 
-    mapping(uint256 => Pool) public pools;
-    uint256 public poolCount;
-    mapping(uint256 => address[]) private poolUsers;
-    mapping(uint256 => mapping(address => bool)) private poolUserExists;
-    mapping(uint256 => mapping(uint256 => address)) private nftOwner;
-    mapping(uint256 => uint256) public minimumStake;
+    PoolData public data;
+    
+    // User mappings
+    mapping(address => uint256) public userStake;           // User stake in stake token units
+    mapping(address => uint256) public userRewardDebt;      // User reward debt for per-share accounting
+    mapping(address => uint256[]) public userNFTs;         // User staked NFTs (enumeration)
+    mapping(address => mapping(uint256 => bool)) public userNFTStaked; // O(1) NFT lookup
+    mapping(address => mapping(uint256 => uint256)) public userNFTIndex; // NFT to index mapping
+    mapping(address => uint256) public lastStakeTime;      // Last stake time for cooldown
+    mapping(uint256 => address) public nftOwner;           // NFT ID to owner mapping
 
-    event PoolCreated(
-        uint256 poolId,
-        uint256 baseApy,
-        uint256 minApy,
-        uint256 scalingFactor,
-        address stakingToken,
-        address rewardToken,
-        bool supportsNFT,
-        uint24 feeTier,
-        address lpPairContract
-    );
-    event Staked(address indexed user, uint256 poolId, uint256 amount, uint256[] nftIds);
-    event Unstaked(address indexed user, uint256 poolId, uint256 amount, uint256[] nftIds);
-    event RewardClaimed(address indexed user, uint256 poolId, uint256 reward);
-    event PoolActivated(uint256 poolId);
-    event PoolDeactivated(uint256 poolId);
-    event FeesUpdated(uint256 depositFee, uint256 withdrawalFee);
-    event RewardsDeposited(uint256 indexed poolId, uint256 amount);
-    event MinimumStakeSet(uint256 indexed poolId, uint256 minimumStake);
-    event RewardCalculated(address indexed user, uint256 poolId, uint256 reward);
+    // Events
+    event Deposited(address indexed user, uint256 amount, uint256 fee);
+    event Withdrawn(address indexed user, uint256 amount, uint256 fee);
+    event Harvested(address indexed user, uint256 reward);
+    event EmergencyWithdrawn(address indexed user, uint256 amount);
+    event RewardsDeposited(address indexed depositor, uint256 amount);
+    event NFTStaked(address indexed user, uint256[] nftIds);
+    event NFTUnstaked(address indexed user, uint256[] nftIds);
 
-    modifier onlyValidFeeWallet() {
-        require(feeWallet != address(0), "Fee wallet not set");
+    modifier onlyPoolCreator() {
+        require(msg.sender == data.poolCreator, "Not pool creator");
         _;
     }
 
-    modifier onlyActivePool(uint256 poolId) {
-        require(poolId < poolCount, "Invalid pool ID");
-        require(pools[poolId].active, "Inactive pool");
+    modifier onlyInitialized() {
+        require(data.initialized, "Pool not initialized");
         _;
     }
 
-    modifier meetsMinimumStake(uint256 poolId, uint256 amount) {
-        require(amount >= minimumStake[poolId], "Stake amount too low");
-        _;
-    }
-
-    constructor(address _feeWallet, address _positionManager, address initialOwner) Ownable(initialOwner) {
-        require(_feeWallet != address(0), "Invalid fee wallet");
-        require(_positionManager != address(0), "Invalid position manager");
-        feeWallet = _feeWallet;
-        positionManager = _positionManager;
-    }
-
-    function setFeeWallet(address _feeWallet) external onlyOwner {
-        require(_feeWallet != address(0), "Invalid fee wallet");
-        feeWallet = _feeWallet;
-    }
-
-    function updateFees(uint256 _depositFeeBps, uint256 _withdrawalFeeBps) external onlyOwner {
-        require(_depositFeeBps <= 1000 && _withdrawalFeeBps <= 1000, "Fees too high");
-        depositFeeBps = _depositFeeBps;
-        withdrawalFeeBps = _withdrawalFeeBps;
-        emit FeesUpdated(_depositFeeBps, _withdrawalFeeBps);
-    }
-
-    function createPool(
-        uint256 _baseApy,
-        uint256 _minApy,
-        uint256 _scalingFactor,
-        address _stakingToken,
-        address _rewardToken,
-        address _nftToken,
+    /**
+     * @dev Initialize the pool (called by factory)
+     */
+    function initialize(
+        IERC20 _stakeToken,
+        IERC20 _rewardToken,
+        uint256 _apyBP,
+        address _feeWallet,
+        uint256 _depositFeeBP,
+        uint256 _withdrawFeeBP,
+        address _poolCreator,
         bool _supportsNFT,
-        uint24 _feeTier,
-        address _lpPairContract
-    ) external onlyOwner {
-        require(_rewardToken != address(0), "Invalid reward token");
-        if (!_supportsNFT) require(_stakingToken != address(0), "Invalid staking token");
-        if (_supportsNFT) require(_nftToken != address(0), "Invalid NFT token");
+        IERC721 _nftToken,
+        address _positionManager
+    ) external {
+        require(!data.initialized, "Already initialized");
+        require(address(_rewardToken) != address(0), "Invalid reward token");
+        require(_feeWallet != address(0), "Invalid fee wallet");
+        require(_poolCreator != address(0), "Invalid pool creator");
+        require(_apyBP <= 5000, "APY cap 50%"); // Anti-scam protection
+        require(_depositFeeBP <= 1000, "Deposit fee too high");
+        require(_withdrawFeeBP <= 1000, "Withdrawal fee too high");
 
-        Pool storage pool = pools[poolCount];
-        pool.baseApy = _baseApy;
-        pool.minApy = _minApy;
-        pool.scalingFactor = _scalingFactor;
-        pool.apy = _baseApy;
-        pool.stakingToken = IERC20(_stakingToken);
-        pool.rewardToken = IERC20(_rewardToken);
-        pool.supportsNFT = _supportsNFT;
-        pool.feeTier = _feeTier;
-        pool.active = true;
-        if (_supportsNFT) pool.nftToken = IERC721(_nftToken);
-        pool.lpPairContract = _lpPairContract;
-
-        emit PoolCreated(poolCount, _baseApy, _minApy, _scalingFactor, _stakingToken, _rewardToken, _supportsNFT, _feeTier, _lpPairContract);
-        poolCount++;
-    }
-
-    function activatePool(uint256 poolId) external onlyOwner {
-        pools[poolId].active = true;
-        emit PoolActivated(poolId);
-    }
-
-    function deactivatePool(uint256 poolId) external onlyOwner {
-        pools[poolId].active = false;
-        emit PoolDeactivated(poolId);
-    }
-
-    function stake(
-        uint256 poolId,
-        uint256 amount,
-        uint256[] calldata nftIds
-    ) external nonReentrant onlyValidFeeWallet onlyActivePool(poolId) meetsMinimumStake(poolId, amount) {
-        Pool storage pool = pools[poolId];
-        require(amount > 0 || nftIds.length > 0, "Must stake tokens or NFTs");
-
-        if (amount > 0) {
-            require(!pool.supportsNFT, "Cannot stake tokens in an NFT pool");
-            uint256 fee = (amount * depositFeeBps) / 10000;
-            uint256 netAmount = amount - fee;
-
-            pool.stakingToken.safeTransferFrom(msg.sender, address(this), netAmount);
-            pool.stakingToken.safeTransferFrom(msg.sender, feeWallet, fee);
-
-            pool.userStakes[msg.sender] += netAmount;
-            pool.totalStaked += netAmount;
-
-            adjustApy(poolId);
-        }
-
-        if (nftIds.length > 0) {
-            require(pool.supportsNFT, "NFTs not supported");
-
-            for (uint256 i = 0; i < nftIds.length; i++) {
-                (, , , , , , , uint128 liquidity, , , , ) = INonfungiblePositionManager(positionManager).positions(nftIds[i]);
-                require(liquidity > 0, "Invalid liquidity for NFT");
-
-                pool.nftToken.safeTransferFrom(msg.sender, address(this), nftIds[i]);
-                pool.userNFTs[msg.sender].push(nftIds[i]);
-                nftOwner[poolId][nftIds[i]] = msg.sender;
-            }
-
-            adjustApyNFT(poolId);
-        }
-
-        if (!poolUserExists[poolId][msg.sender]) {
-            poolUserExists[poolId][msg.sender] = true;
-            poolUsers[poolId].push(msg.sender);
-        }
-
-        pool.lastStakeTime[msg.sender] = block.timestamp;
-        emit Staked(msg.sender, poolId, amount, nftIds);
-    }
-
-    function unstake(
-        uint256 poolId,
-        uint256 amount,
-        uint256[] calldata nftIds
-    ) external nonReentrant onlyValidFeeWallet onlyActivePool(poolId) {
-        Pool storage pool = pools[poolId];
-        require(amount > 0 || nftIds.length > 0, "Must unstake tokens or NFTs");
-        require(block.timestamp >= pool.lastStakeTime[msg.sender] + UNSTAKE_COOLDOWN, "Cooldown active");
-
-        if (amount > 0) {
-            require(!pool.supportsNFT, "Cannot unstake tokens from an NFT pool");
-            require(pool.userStakes[msg.sender] >= amount, "Insufficient tokens");
-
-            uint256 fee = (amount * withdrawalFeeBps) / 10000;
-            uint256 netAmount = amount - fee;
-
-            pool.userStakes[msg.sender] -= amount;
-            pool.totalStaked -= amount;
-
-            pool.stakingToken.safeTransfer(msg.sender, netAmount);
-            pool.stakingToken.safeTransfer(feeWallet, fee);
-
-            adjustApy(poolId);
-        }
-
-        if (nftIds.length > 0) {
-            require(pool.supportsNFT, "NFTs not supported");
-
-            for (uint256 i = 0; i < nftIds.length; i++) {
-                uint256 index = findNFTIndex(pool.userNFTs[msg.sender], nftIds[i]);
-                require(index < pool.userNFTs[msg.sender].length, "NFT not staked");
-
-                pool.nftToken.safeTransferFrom(address(this), msg.sender, nftIds[i]);
-                delete nftOwner[poolId][nftIds[i]];
-                pool.userNFTs[msg.sender][index] = pool.userNFTs[msg.sender][pool.userNFTs[msg.sender].length - 1];
-                pool.userNFTs[msg.sender].pop();
-            }
-
-            adjustApyNFT(poolId);
-        }
-
-        emit Unstaked(msg.sender, poolId, amount, nftIds);
-    }
-
-    function claimRewards(uint256 poolId) external nonReentrant onlyActivePool(poolId) {
-        Pool storage pool = pools[poolId];
-        uint256 reward = calculateReward(poolId, msg.sender);
-        require(reward > 0, "No rewards available");
-
-        pool.lastStakeTime[msg.sender] = block.timestamp;
-        pool.rewardToken.safeTransfer(msg.sender, reward);
-        pool.totalRewardsDistributed += reward;
-
-        emit RewardClaimed(msg.sender, poolId, reward);
-        emit RewardCalculated(msg.sender, poolId, reward);
-    }
-
-    function calculateReward(uint256 poolId, address user) public view returns (uint256) {
-        Pool storage pool = pools[poolId];
-        uint256 reward = 0;
-
-        if (!pool.supportsNFT) {
-            uint256 userStake = pool.userStakes[user];
-            if (userStake > 0) {
-                uint256 timeStaked = block.timestamp - pool.lastStakeTime[user];
-
-                // Calculate base reward with high precision
-                uint256 baseReward = (userStake * pool.apy * timeStaked * PRECISION_FACTOR) / 
-                                   (SECONDS_IN_YEAR * BASIS_POINTS * PRECISION_FACTOR);
-
-                // Apply time-based multiplier
-                uint256 multiplier = 100;
-                if (timeStaked > 90 days) {
-                    multiplier = 150;
-                } else if (timeStaked > 30 days) {
-                    multiplier = 120;
-                }
-
-                reward = (baseReward * multiplier) / 100;
-            }
+        if (!_supportsNFT) {
+            require(address(_stakeToken) != address(0), "Invalid stake token");
         } else {
-            uint256 userLiquidity = calculateUserLiquidity(poolId, user);
-            if (userLiquidity > 0) {
-                uint256 timeStakedNFT = block.timestamp - pool.lastStakeTime[user];
+            require(address(_nftToken) != address(0), "Invalid NFT token");
+            require(_positionManager != address(0), "Invalid position manager");
+        }
 
-                uint256 nftMultiplier = 100;
-                if (userLiquidity > 100000) {
-                    nftMultiplier = 130;
-                } else if (userLiquidity > 50000) {
-                    nftMultiplier = 120;
-                }
+        data.stakeToken = _stakeToken;
+        data.rewardToken = _rewardToken;
+        data.rewardDec = _getDecimals(_rewardToken);
+        data.stakeDec = _supportsNFT ? data.rewardDec : _getDecimals(_stakeToken); // Match reward decimals for NFTs
+        data.apyBP = _apyBP;
+        data.feeWallet = _feeWallet;
+        data.depositFeeBP = _depositFeeBP;
+        data.withdrawFeeBP = _withdrawFeeBP;
+        data.poolCreator = _poolCreator;
+        data.supportsNFT = _supportsNFT;
+        data.nftToken = _nftToken;
+        data.positionManager = _positionManager;
+        data.lastAccrualTs = block.timestamp;
+        data.initialized = true;
+    }
 
-                reward = (userLiquidity * pool.apy * timeStakedNFT * PRECISION_FACTOR * nftMultiplier) / 
-                        (SECONDS_IN_YEAR * BASIS_POINTS * PRECISION_FACTOR * 100);
+    /**
+     * @dev Get token decimals safely
+     */
+    function _getDecimals(IERC20 token) internal view returns (uint8) {
+        try token.decimals() returns (uint8 decimals) {
+            return decimals;
+        } catch {
+            return 18; // Default to 18 decimals
+        }
+    }
+
+    /**
+     * @dev Convert stake token amount to reward token units for calculations
+     */
+    function _toRewardUnits(uint256 amount) internal view returns (uint256) {
+        if (data.stakeDec == data.rewardDec) return amount;
+        
+        // Prevent overflow: cap decimal difference to prevent 10**(>77) overflow
+        uint256 decDiff = data.stakeDec < data.rewardDec 
+            ? data.rewardDec - data.stakeDec 
+            : data.stakeDec - data.rewardDec;
+        require(decDiff <= 18, "Decimal difference too large");
+        
+        if (data.stakeDec < data.rewardDec) {
+            return amount * 10 ** (data.rewardDec - data.stakeDec);
+        }
+        return amount / 10 ** (data.stakeDec - data.rewardDec);
+    }
+
+    /**
+     * @dev Accrue rewards based on time elapsed and current APY
+     */
+    function _accrue() internal {
+        if (block.timestamp == data.lastAccrualTs || data.totalStakeR == 0) {
+            data.lastAccrualTs = block.timestamp;
+            return;
+        }
+
+        uint256 dt = block.timestamp - data.lastAccrualTs;
+        uint256 yearly = (data.apyBP * 1e18) / BP;  // Scale to 1e18
+        uint256 maxReward = (data.totalStakeR * yearly * dt) / YEAR / 1e18;
+        
+        // Pay out what we can, never revert on empty pot
+        uint256 reward = maxReward > data.availableRewards 
+            ? data.availableRewards    // pay what we can
+            : maxReward;
+        
+        if (reward > 0) {
+            data.availableRewards -= reward;
+            data.accRewardPerShare += (reward * RAY) / data.totalStakeR;
+        }
+        
+        data.lastAccrualTs = block.timestamp;
+    }
+
+    /**
+     * @dev Calculate pending rewards for a user
+     */
+    function pendingRewards(address user) public view returns (uint256) {
+        if (userStake[user] == 0 || data.totalStakeR == 0) return 0;
+
+        uint256 accPerShare = data.accRewardPerShare;
+        
+        // Calculate what the accPerShare would be after accrual - mirror _accrue() logic
+        if (block.timestamp > data.lastAccrualTs && data.totalStakeR > 0) {
+            uint256 dt = block.timestamp - data.lastAccrualTs;
+            uint256 yearly = (data.apyBP * 1e18) / BP;
+            uint256 maxReward = (data.totalStakeR * yearly * dt) / YEAR / 1e18;
+            
+            // Use same min() logic as _accrue() to match actual reward distribution
+            uint256 reward = maxReward > data.availableRewards 
+                ? data.availableRewards 
+                : maxReward;
+            
+            if (reward > 0) {
+                accPerShare += (reward * RAY) / data.totalStakeR;
             }
         }
 
-        return reward;
+        uint256 userStakeR = _toRewardUnits(userStake[user]);
+        uint256 totalReward = (userStakeR * accPerShare) / RAY;
+        return totalReward > userRewardDebt[user] ? totalReward - userRewardDebt[user] : 0;
     }
 
-    function calculateTotalLiquidity(uint256 poolId, address account) public view returns (uint256) {
-        Pool storage pool = pools[poolId];
-        uint256[] memory userNFTsArray = pool.userNFTs[account];
+    /**
+     * @dev Calculate user liquidity from NFT positions
+     */
+    function calculateUserLiquidity(address user) public view returns (uint256) {
+        if (!data.supportsNFT) return 0;
+        
+        uint256[] memory userNFTsArray = userNFTs[user];
         uint256 totalLiquidity = 0;
 
         for (uint256 i = 0; i < userNFTsArray.length; i++) {
-            (, , , , , , , uint128 liquidity, , , , ) = INonfungiblePositionManager(positionManager).positions(userNFTsArray[i]);
-            totalLiquidity += liquidity;
-        }
-
-        return totalLiquidity;
-    }
-
-    function calculateUserLiquidity(uint256 poolId, address user) internal view returns (uint256) {
-        return calculateTotalLiquidity(poolId, user);
-    }
-
-    function adjustApy(uint256 poolId) internal {
-        Pool storage pool = pools[poolId];
-        uint256 totalStaked = pool.totalStaked;
-
-        if (totalStaked >= pool.scalingFactor) {
-            pool.apy = pool.minApy;
-        } else {
-            pool.apy = pool.baseApy - ((pool.baseApy - pool.minApy) * totalStaked) / pool.scalingFactor;
-        }
-    }
-
-    function adjustApyNFT(uint256 poolId) internal {
-        Pool storage pool = pools[poolId];
-        uint256 totalLiquidity = calculateTotalLiquidity(poolId, address(this));
-
-        if (totalLiquidity >= pool.scalingFactor) {
-            pool.apy = pool.minApy;
-        } else {
-            pool.apy = pool.baseApy - ((pool.baseApy - pool.minApy) * totalLiquidity) / pool.scalingFactor;
-        }
-    }
-
-    function findNFTIndex(uint256[] storage nftArray, uint256 nftId) internal view returns (uint256) {
-        for (uint256 i = 0; i < nftArray.length; i++) {
-            if (nftArray[i] == nftId) {
-                return i;
+            try INonfungiblePositionManager(data.positionManager).positions(userNFTsArray[i]) 
+                returns (uint96, address, address, address, uint24, int24, int24, uint128 liquidity, uint256, uint256, uint128, uint128) {
+                totalLiquidity += liquidity;
+            } catch {
+                // Skip invalid positions
+                continue;
             }
         }
-        revert("NFT not found");
-    }
-
-    function onERC721Received(
-        address,
-        address,
-        uint256,
-        bytes calldata
-    ) external pure override returns (bytes4) {
-        return IERC721Receiver.onERC721Received.selector;
-    }
-
-    function getLpPairContract(uint256 poolId) public view returns (address) {
-        require(poolId < poolCount, "Invalid pool ID");
-        return pools[poolId].lpPairContract;
-    }
-
-    function getTotalLiquidity(uint256 poolId) public view returns (uint128) {
-        require(poolId < poolCount, "Invalid pool ID");
-
-        uint256[] memory tokenIds = pools[poolId].lpPositions;
-        uint128 totalLiquidity = 0;
-
-        for (uint256 i = 0; i < tokenIds.length; i++) {
-            (, , , , , , , uint128 liquidity, , , , ) = INonfungiblePositionManager(positionManager).positions(tokenIds[i]);
-            totalLiquidity += liquidity;
-        }
 
         return totalLiquidity;
     }
 
-    function getUserInfo(uint256 poolId, address user)
-        external
-        view
-        returns (uint256 userStake, uint256[] memory userNFTsArray, uint256 lastStakeTimeVal, uint256 pendingRewards)
-    {
-        Pool storage pool = pools[poolId];
-        uint256 rewards = calculateReward(poolId, user);
+    /**
+     * @dev Deposit stake tokens or NFTs
+     */
+    function deposit(uint256 amount, uint256[] calldata nftIds) external nonReentrant whenNotPaused onlyInitialized {
+        require(amount > 0 || nftIds.length > 0, "Must stake tokens or NFTs");
+        
+        _accrue();
+        
+        // Collect any pending rewards first
+        uint256 pending = pendingRewards(msg.sender);
+        if (pending > 0) {
+            data.rewardToken.safeTransfer(msg.sender, pending);
+            emit Harvested(msg.sender, pending);
+        }
+
+        if (amount > 0) {
+            require(!data.supportsNFT, "Cannot stake tokens in NFT pool");
+            
+            // Calculate and collect deposit fee - optimized single transfer
+            uint256 fee = (amount * data.depositFeeBP) / BP;
+            uint256 netAmount = amount - fee;
+
+            // Fee-on-transfer protection: check balance before and after
+            uint256 balanceBefore = data.stakeToken.balanceOf(address(this));
+            data.stakeToken.safeTransferFrom(msg.sender, address(this), amount);
+            uint256 balanceAfter = data.stakeToken.balanceOf(address(this));
+            require(balanceAfter - balanceBefore == amount, "Fee-on-transfer tokens not supported");
+            
+            if (fee > 0) {
+                data.stakeToken.safeTransfer(data.feeWallet, fee);
+            }
+
+            // Update user and pool state
+            uint256 netAmountR = _toRewardUnits(netAmount);
+            userStake[msg.sender] += netAmount;
+            data.totalStakeR += netAmountR;
+
+            emit Deposited(msg.sender, netAmount, fee);
+        }
+
+        if (nftIds.length > 0) {
+            require(data.supportsNFT, "NFTs not supported");
+            
+            uint256 totalLiquidity = 0;
+            for (uint256 i = 0; i < nftIds.length; i++) {
+                // Verify NFT has valid liquidity and enforce cap to prevent economic attacks
+                (, , , , , , , uint128 liquidity, , , , ) = INonfungiblePositionManager(data.positionManager).positions(nftIds[i]);
+                require(liquidity > 0, "Invalid liquidity for NFT");
+                require(liquidity <= MAX_LIQUIDITY_PER_NFT, "Liquidity exceeds maximum allowed");
+                
+                data.nftToken.safeTransferFrom(msg.sender, address(this), nftIds[i]);
+                
+                // O(1) NFT tracking
+                userNFTIndex[msg.sender][nftIds[i]] = userNFTs[msg.sender].length;
+                userNFTStaked[msg.sender][nftIds[i]] = true;
+                userNFTs[msg.sender].push(nftIds[i]);
+                nftOwner[nftIds[i]] = msg.sender;
+                totalLiquidity += liquidity;
+            }
+
+            // Update pool state with liquidity as stake
+            userStake[msg.sender] += totalLiquidity;
+            uint256 totalLiquidityR = _toRewardUnits(totalLiquidity);
+            data.totalStakeR += totalLiquidityR;
+
+            emit NFTStaked(msg.sender, nftIds);
+        }
+
+        // Update reward debt
+        userRewardDebt[msg.sender] = (_toRewardUnits(userStake[msg.sender]) * data.accRewardPerShare) / RAY;
+        lastStakeTime[msg.sender] = block.timestamp;
+    }
+
+    /**
+     * @dev Withdraw stake tokens or NFTs
+     */
+    function withdraw(uint256 amount, uint256[] calldata nftIds) external nonReentrant onlyInitialized {
+        require(amount > 0 || nftIds.length > 0, "Must unstake tokens or NFTs");
+        require(block.timestamp >= lastStakeTime[msg.sender] + UNSTAKE_COOLDOWN, "Cooldown active");
+        
+        _accrue();
+        
+        // Collect any pending rewards first
+        uint256 pending = pendingRewards(msg.sender);
+        if (pending > 0) {
+            data.rewardToken.safeTransfer(msg.sender, pending);
+            emit Harvested(msg.sender, pending);
+        }
+
+        if (amount > 0) {
+            require(!data.supportsNFT, "Cannot unstake tokens from NFT pool");
+            require(userStake[msg.sender] >= amount, "Insufficient stake");
+            
+            // Calculate and apply withdrawal fee
+            uint256 fee = (amount * data.withdrawFeeBP) / BP;
+            uint256 netAmount = amount - fee;
+
+            // Update user and pool state - totalStakeR must decrease by full amount (including fees)
+            uint256 amountR = _toRewardUnits(amount);
+            userStake[msg.sender] -= amount;
+            data.totalStakeR -= amountR;
+
+            // Transfer tokens
+            data.stakeToken.safeTransfer(msg.sender, netAmount);
+            if (fee > 0) {
+                data.stakeToken.safeTransfer(data.feeWallet, fee);
+            }
+
+            emit Withdrawn(msg.sender, netAmount, fee);
+        }
+
+        if (nftIds.length > 0) {
+            require(data.supportsNFT, "NFTs not supported");
+            
+            uint256 totalLiquidity = 0;
+            for (uint256 i = 0; i < nftIds.length; i++) {
+                // O(1) check if NFT is staked
+                require(userNFTStaked[msg.sender][nftIds[i]], "NFT not staked");
+
+                // Get liquidity before transfer
+                (, , , , , , , uint128 liquidity, , , , ) = INonfungiblePositionManager(data.positionManager).positions(nftIds[i]);
+                totalLiquidity += liquidity;
+
+                data.nftToken.safeTransferFrom(address(this), msg.sender, nftIds[i]);
+                delete nftOwner[nftIds[i]];
+                
+                // O(1) removal from array using swap-and-pop
+                uint256 idx = userNFTIndex[msg.sender][nftIds[i]];
+                uint256 lastId = userNFTs[msg.sender][userNFTs[msg.sender].length - 1];
+                userNFTs[msg.sender][idx] = lastId;
+                userNFTIndex[msg.sender][lastId] = idx;
+                userNFTs[msg.sender].pop();
+                delete userNFTIndex[msg.sender][nftIds[i]];
+                delete userNFTStaked[msg.sender][nftIds[i]];
+            }
+
+            // Update pool state
+            userStake[msg.sender] -= totalLiquidity;
+            uint256 totalLiquidityR = _toRewardUnits(totalLiquidity);
+            data.totalStakeR -= totalLiquidityR;
+
+            emit NFTUnstaked(msg.sender, nftIds);
+        }
+
+        // Update reward debt
+        userRewardDebt[msg.sender] = (_toRewardUnits(userStake[msg.sender]) * data.accRewardPerShare) / RAY;
+    }
+
+    /**
+     * @dev Harvest rewards without withdrawing stake
+     */
+    function harvest() external nonReentrant onlyInitialized {
+        _accrue();
+        
+        uint256 pending = pendingRewards(msg.sender);
+        require(pending > 0, "No rewards available");
+
+        userRewardDebt[msg.sender] = (_toRewardUnits(userStake[msg.sender]) * data.accRewardPerShare) / RAY;
+        data.rewardToken.safeTransfer(msg.sender, pending);
+
+        emit Harvested(msg.sender, pending);
+    }
+
+    /**
+     * @dev Emergency withdraw without rewards (no fees)
+     */
+    function emergencyWithdraw() external nonReentrant onlyInitialized {
+        uint256 amount = userStake[msg.sender];
+        require(amount > 0, "No stake to withdraw");
+
+        if (!data.supportsNFT) {
+            // Token withdrawal
+            uint256 amountR = _toRewardUnits(amount);
+            userStake[msg.sender] = 0;
+            userRewardDebt[msg.sender] = 0;
+            data.totalStakeR -= amountR;
+
+            data.stakeToken.safeTransfer(msg.sender, amount);
+        } else {
+            // NFT withdrawal
+            uint256[] memory userNFTsArray = userNFTs[msg.sender];
+            for (uint256 i = 0; i < userNFTsArray.length; i++) {
+                data.nftToken.safeTransferFrom(address(this), msg.sender, userNFTsArray[i]);
+                delete nftOwner[userNFTsArray[i]];
+            }
+            delete userNFTs[msg.sender];
+            
+            userStake[msg.sender] = 0;
+            userRewardDebt[msg.sender] = 0;
+            data.totalStakeR -= _toRewardUnits(amount);
+        }
+
+        emit EmergencyWithdrawn(msg.sender, amount);
+    }
+
+    /**
+     * @dev Deposit reward tokens to fund the pool
+     */
+    function depositRewards(uint256 amount) external nonReentrant onlyInitialized {
+        require(amount > 0, "Amount must be > 0");
+        
+        // Fee-on-transfer protection: check actual received amount
+        uint256 balBefore = data.rewardToken.balanceOf(address(this));
+        data.rewardToken.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 received = data.rewardToken.balanceOf(address(this)) - balBefore;
+        data.availableRewards += received;
+
+        emit RewardsDeposited(msg.sender, received);
+    }
+
+
+    /**
+     * @dev Pause the pool (only pool creator)
+     */
+    function pause() external onlyPoolCreator {
+        _pause();
+    }
+
+    /**
+     * @dev Unpause the pool (only pool creator)
+     */
+    function unpause() external onlyPoolCreator {
+        _unpause();
+    }
+
+    /**
+     * @dev Get user info
+     */
+    function getUserInfo(address user) external view returns (
+        uint256 userStakeAmount,
+        uint256[] memory userNFTsArray,
+        uint256 lastStakeTimeVal,
+        uint256 pendingRewardsAmount
+    ) {
         return (
-            pool.userStakes[user],
-            pool.userNFTs[user],
-            pool.lastStakeTime[user],
-            rewards
+            userStake[user],
+            userNFTs[user],
+            lastStakeTime[user],
+            pendingRewards(user)
         );
     }
 
-    function getActivePools() external view returns (uint256[] memory) {
-        uint256[] memory activePools = new uint256[](poolCount);
-        uint256 count = 0;
-
-        for (uint256 i = 0; i < poolCount; i++) {
-            if (pools[i].active) {
-                activePools[count] = i;
-                count++;
-            }
-        }
-
-        assembly {
-            mstore(activePools, count)
-        }
-
-        return activePools;
+    /**
+     * @dev ERC721 receiver
+     */
+    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
     }
 
-    function getPendingRewards(uint256 poolId, address user) external view returns (uint256) {
-        require(poolId < poolCount, "Invalid pool ID");
-        return calculateReward(poolId, user);
-    }
-
-    function emergencyWithdraw(uint256 poolId) external nonReentrant {
-        require(poolId < poolCount, "Invalid pool ID");
-        Pool storage pool = pools[poolId];
-
-        uint256 stakedAmount = pool.userStakes[msg.sender];
-        bool hasNFTs = pool.userNFTs[msg.sender].length > 0;
-        require(stakedAmount > 0 || hasNFTs, "No stake to withdraw");
-
-        if (stakedAmount > 0) {
-            require(!pool.supportsNFT, "Cannot withdraw tokens from an NFT pool");
-            pool.userStakes[msg.sender] = 0;
-            pool.totalStaked -= stakedAmount;
-
-            pool.stakingToken.safeTransfer(msg.sender, stakedAmount);
-
-            emit Unstaked(msg.sender, poolId, stakedAmount, new uint256[](0));
-        }
-
-        if (hasNFTs) {
-            require(pool.supportsNFT, "Cannot withdraw NFTs from a token pool");
-            uint256[] memory userNFTsArray = pool.userNFTs[msg.sender];
-            for (uint256 i = 0; i < userNFTsArray.length; i++) {
-                pool.nftToken.safeTransferFrom(address(this), msg.sender, userNFTsArray[i]);
-                delete nftOwner[poolId][userNFTsArray[i]];
-            }
-            delete pool.userNFTs[msg.sender];
-
-            emit Unstaked(msg.sender, poolId, 0, userNFTsArray);
-        }
-    }
-
-    function updatePoolDetails(
-        uint256 poolId,
-        uint256 newBaseApy,
-        uint256 newMinApy,
-        uint256 newScalingFactor,
-        bool newActiveStatus
-    ) external onlyOwner {
-        require(poolId < poolCount, "Invalid pool ID");
-
-        Pool storage pool = pools[poolId];
-        pool.baseApy = newBaseApy;
-        pool.minApy = newMinApy;
-        pool.scalingFactor = newScalingFactor;
-        pool.active = newActiveStatus;
-
-        pool.apy = newBaseApy;
-
-        if (pool.supportsNFT) {
-            adjustApyNFT(poolId);
-        } else {
-            adjustApy(poolId);
-        }
-    }
-
-    function setMinimumStake(uint256 poolId, uint256 amount) external onlyOwner {
-        require(poolId < poolCount, "Invalid pool ID");
-        minimumStake[poolId] = amount;
-        emit MinimumStakeSet(poolId, amount);
-    }
-
-    function depositRewards(uint256 poolId, uint256 amount) external onlyOwner {
-        require(poolId < poolCount, "Invalid pool ID");
-        Pool storage pool = pools[poolId];
-
-        pool.rewardToken.safeTransferFrom(msg.sender, address(this), amount);
-        emit RewardsDeposited(poolId, amount);
-    }
-
+    /**
+     * @dev Fallback to prevent ETH transfers
+     */
     fallback() external {
         revert("Direct ETH transfers not allowed");
+    }
+}
+
+// Factory Contract
+contract StakingAndFarming is Ownable, ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    address public immutable poolImplementation;
+    uint256 public creationFee;                     // Creation fee in ETH or payToken
+    IERC20 public payToken;                         // Fee token (address(0) = ETH)
+    address public feeWallet;
+    uint256 public defaultDepositFeeBP = 200;       // 2%
+    uint256 public defaultWithdrawalFeeBP = 500;    // 5%
+    uint256 public saltCounter;                     // Monotonic counter for deterministic salts
+    bool public nftPoolsEnabled = false;           // Global NFT pool disable switch
+
+    // Token whitelists
+    mapping(address => bool) public allowedStakeTokens;
+    mapping(address => bool) public allowedRewardTokens;
+    
+    // Pool tracking
+    address[] public allPools;
+    mapping(address => address[]) public userPools;     // User to their created pools
+    mapping(address => bool) public isValidPool;
+
+    // Events
+    event PoolCreated(
+        address indexed creator,
+        address indexed pool,
+        address stakeToken,
+        address rewardToken,
+        uint256 apyBP,
+        bool supportsNFT
+    );
+    event CreationFeeUpdated(uint256 newFee, address payToken);
+    event TokenWhitelisted(address token, bool isStakeToken, bool allowed);
+    event DefaultFeesUpdated(uint256 depositFeeBP, uint256 withdrawalFeeBP);
+
+    constructor(address _feeWallet, address initialOwner) Ownable(initialOwner) {
+        require(_feeWallet != address(0), "Invalid fee wallet");
+        feeWallet = _feeWallet;
+        
+        // Deploy implementation contract
+        poolImplementation = address(new StakingPool());
+        
+        // Set initial creation fee (0.1 ETH)
+        creationFee = 0.1 ether;
+        payToken = IERC20(address(0)); // ETH
+    }
+
+    /**
+     * @dev Create a new staking pool
+     */
+    function createPool(
+        IERC20 stakeToken,
+        IERC20 rewardToken,
+        uint256 apyBP,
+        bool supportsNFT,
+        IERC721 nftToken,
+        address positionManager
+    ) external payable nonReentrant returns (address pool) {
+        require(allowedRewardTokens[address(rewardToken)], "Reward token not allowed");
+        if (!supportsNFT) {
+            require(allowedStakeTokens[address(stakeToken)], "Stake token not allowed");
+        } else {
+            require(nftPoolsEnabled, "NFT pools disabled");
+            require(address(nftToken) != address(0), "Invalid NFT token");
+            require(positionManager != address(0), "Invalid position manager");
+        }
+        require(apyBP <= 5000, "APY cap 50%");
+
+        _collectCreationFee();
+
+        // Deploy pool clone with deterministic salt - prevent overflow
+        require(saltCounter < type(uint256).max, "Salt counter overflow");
+        bytes32 salt = keccak256(abi.encode(msg.sender, ++saltCounter));
+        pool = Clones.cloneDeterministic(poolImplementation, salt);
+        
+        // Initialize pool
+        StakingPool(pool).initialize(
+            stakeToken,
+            rewardToken,
+            apyBP,
+            feeWallet,
+            defaultDepositFeeBP,
+            defaultWithdrawalFeeBP,
+            msg.sender,
+            supportsNFT,
+            nftToken,
+            positionManager
+        );
+
+        // Track pool
+        allPools.push(pool);
+        userPools[msg.sender].push(pool);
+        isValidPool[pool] = true;
+
+        emit PoolCreated(msg.sender, pool, address(stakeToken), address(rewardToken), apyBP, supportsNFT);
+    }
+
+    /**
+     * @dev Collect creation fee
+     */
+    function _collectCreationFee() internal {
+        if (address(payToken) == address(0)) {
+            require(msg.value == creationFee, "Wrong ETH fee");
+            (bool success,) = feeWallet.call{value: msg.value}("");
+            require(success, "ETH fee transfer failed");
+        } else {
+            require(msg.value == 0, "Send ERC-20 fee, not ETH");
+            payToken.safeTransferFrom(msg.sender, feeWallet, creationFee);
+        }
+    }
+
+    /**
+     * @dev Update creation fee
+     */
+    function updateCreationFee(uint256 _creationFee, IERC20 _payToken) external onlyOwner {
+        creationFee = _creationFee;
+        payToken = _payToken;
+        emit CreationFeeUpdated(_creationFee, address(_payToken));
+    }
+
+    /**
+     * @dev Update default fees
+     */
+    function updateDefaultFees(uint256 _depositFeeBP, uint256 _withdrawalFeeBP) external onlyOwner {
+        require(_depositFeeBP <= 1000 && _withdrawalFeeBP <= 1000, "Fees too high");
+        defaultDepositFeeBP = _depositFeeBP;
+        defaultWithdrawalFeeBP = _withdrawalFeeBP;
+        emit DefaultFeesUpdated(_depositFeeBP, _withdrawalFeeBP);
+    }
+
+    /**
+     * @dev Whitelist tokens
+     */
+    function whitelistToken(address token, bool isStakeToken, bool allowed) external onlyOwner {
+        if (isStakeToken) {
+            allowedStakeTokens[token] = allowed;
+        } else {
+            allowedRewardTokens[token] = allowed;
+        }
+        emit TokenWhitelisted(token, isStakeToken, allowed);
+    }
+
+    /**
+     * @dev Update fee wallet
+     */
+    function updateFeeWallet(address _feeWallet) external onlyOwner {
+        require(_feeWallet != address(0), "Invalid fee wallet");
+        feeWallet = _feeWallet;
+    }
+
+    /**
+     * @dev Enable or disable NFT pool creation
+     */
+    function setNFTPoolsEnabled(bool _enabled) external onlyOwner {
+        nftPoolsEnabled = _enabled;
+    }
+
+    /**
+     * @dev Get all pools
+     */
+    function getAllPools() external view returns (address[] memory) {
+        return allPools;
+    }
+
+    /**
+     * @dev Get user pools
+     */
+    function getUserPools(address user) external view returns (address[] memory) {
+        return userPools[user];
+    }
+
+    /**
+     * @dev Get pool count
+     */
+    function getPoolCount() external view returns (uint256) {
+        return allPools.length;
+    }
+
+    /**
+     * @dev Fallback to prevent ETH transfers
+     */
+    fallback() external {
+        revert("Direct ETH transfers not allowed");
+    }
+
+    /**
+     * @dev Receive function to accept ETH for creation fees
+     */
+    receive() external payable {
+        revert("Use createPool function");
     }
 }
